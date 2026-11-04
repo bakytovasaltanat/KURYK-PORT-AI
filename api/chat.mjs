@@ -25,8 +25,7 @@ export async function POST(request) {
   try {
     const headers = { apikey: PUBLISHABLE_KEY, Authorization: bearer };
     const auth = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers,
-      signal: AbortSignal.timeout(10000)
+      headers, signal: AbortSignal.timeout(10000)
     });
     if (!auth.ok)
       return json({ error: 'Кіру сессиясы аяқталды. Қайта кіріңіз.' }, 401);
@@ -46,31 +45,51 @@ export async function POST(request) {
     if (employee?.status !== 'approved' || !employee.role)
       return json({ error: 'AI тек расталған қызметкерлерге қолжетімді.' }, 403);
 
-    const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-    const gemini = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': process.env.GEMINI_API_KEY
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{
-              text: 'You assist employees of Kuryk Port. Reply in the language of the question. Give practical, concise guidance. Do not claim access to live port data. Say when a fact needs verification.'
-            }]
-          },
-          contents: [{ role: 'user', parts: [{ text: message }] }],
-          generationConfig: { maxOutputTokens: 800 }
-        }),
-        signal: AbortSignal.timeout(25000)
+    const payload = JSON.stringify({
+      systemInstruction: {
+        parts: [{
+          text: 'You assist employees of Kuryk Port. Reply in the language of the question. Give practical, concise guidance. Do not claim access to live port data. Say when a fact needs verification.'
+        }]
+      },
+      contents: [{ role: 'user', parts: [{ text: message }] }],
+      generationConfig: { maxOutputTokens: 800 }
+    });
+
+    const models = [
+      process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+      'gemini-3.5-flash-lite'
+    ];
+    let gemini;
+
+    for (const model of [...new Set(models)]) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        gemini = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': process.env.GEMINI_API_KEY
+            },
+            body: payload,
+            signal: AbortSignal.timeout(25000)
+          }
+        );
+        if (gemini.status !== 503) break;
+        if (attempt === 0)
+          await new Promise(resolve => setTimeout(resolve, 900));
       }
-    );
+      if (gemini.status !== 503) break;
+    }
+
+    if (gemini.status === 503)
+      return json({
+        error: 'Gemini сервері уақытша бос емес. Бірнеше минуттан кейін қайталап көріңіз.'
+      }, 503);
 
     if (!gemini.ok)
       return json({
-        error: `Gemini жауап бермеді (HTTP ${gemini.status}). API кілтін және модельді тексеріңіз.`
+        error: `Gemini сұрауды қабылдамады (HTTP ${gemini.status}). Google AI Studio-дағы кілт пен жобаны тексеріңіз.`
       }, 502);
 
     const result = await gemini.json();
